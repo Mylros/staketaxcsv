@@ -15,17 +15,7 @@ class TxInfoIBC(TxInfo):
         for i, msg in enumerate(self.msgs):
             print("\nmsg{}:".format(i))
             pprint.pprint(msg.message)
+            print("\tmsg_type: {}".format(msg.msg_type))
             print("\ttransfers_in: {}".format(msg.transfers[0]))
             print("\ttransfers_out: {}".format(msg.transfers[1]))
         print("\n")
-
-
-class MsgInfoIBC:
-    """ Single message info for index <i> """
-
-    def __init__(self, msg_index, message, log, transfers, transfer_event):
-        self.msg_index = msg_index
-        self.message = message
-        self.log = log
-        self.transfers = transfers
-        self.transfer_event = transfer_event

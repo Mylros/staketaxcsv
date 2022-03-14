@@ -83,10 +83,11 @@ class Row:
 
 class Exporter:
 
-    def __init__(self, wallet_address, localconfig=None):
+    def __init__(self, wallet_address, localconfig=None, ticker=""):
         self.wallet_address = wallet_address
         self.rows = []
         self.is_reverse = None  # last sorted direction
+        self.ticker = ticker
 
         self.lp_treatment = et.LP_TREATMENT_DEFAULT
         self.use_cache = False
@@ -232,6 +233,10 @@ class Exporter:
             self.export_zenledger_csv(csvpath)
         elif format == et.FORMAT_TAXBIT:
             self.export_taxbit_csv(csvpath)
+        elif format == et.FORMAT_COINLEDGER:
+            self.export_coinledger_csv(csvpath)
+        elif format == et.FORMAT_CRYPTOCOM:
+            self.export_cryptocom_csv(csvpath)
         return csvpath
 
     def export_default_csv(self, csvpath=None, truncate=0):
@@ -454,6 +459,135 @@ class Exporter:
                 mywriter.writerow(line)
 
         logging.info("Wrote to %s", csvpath)
+
+    def export_coinledger_csv(self, csvpath):
+        """ Write CSV, suitable for import into CoinLedger (cryptotrader.tax) """
+        tags = {
+            et.TX_TYPE_AIRDROP: "Airdrop",
+            et.TX_TYPE_STAKING: "Staking",
+            et.TX_TYPE_TRADE: "",
+            et.TX_TYPE_TRANSFER: "Transfer",
+            et.TX_TYPE_INCOME: "Income",
+            et.TX_TYPE_SPEND: "Gift Sent",
+            et.TX_TYPE_BORROW: "Transfer",
+            et.TX_TYPE_REPAY: "Transfer",
+        }
+        rows = self._rows_export(et.FORMAT_COINLEDGER)
+
+        with open(csvpath, 'w', newline='', encoding='utf-8') as f:
+            mywriter = csv.writer(f)
+
+            # header row
+            mywriter.writerow(et.CL_FIELDS)
+
+            # data rows
+            for row in rows:
+                tag = tags[row.tx_type]
+                if tag == "Transfer":
+                    if row.received_amount and not row.sent_amount:
+                        tag = "Deposit"
+                    if row.sent_amount and not row.received_amount:
+                        tag = "Withdrawal"
+
+                line = [
+                    self._coinledger_timestamp(row.timestamp),           # Date (UTC)
+                    "{}_blockchain".format(self.ticker.lower()),         # Platform (Optional)
+                    self._coinledger_code(row.sent_currency),            # Asset Sent
+                    row.sent_amount,                                     # Amount Sent
+                    self._coinledger_code(row.received_currency),        # Asset Received
+                    row.received_amount,                                 # Amount Received
+                    self._coinledger_code(row.fee_currency),             # Fee Currency (Optional)"
+                    row.fee,                                             # Fee Amount (Optional)"
+                    tag,                                                 # Type
+                    row.comment,                                         # Description (Optional)
+                    row.txid                                             # TxHash (Optional)
+                ]
+                mywriter.writerow(line)
+
+        logging.info("Wrote to %s", csvpath)
+
+    def _coinledger_timestamp(self, ts):
+        # Convert "2021-08-04 15:25:43" to "08/14/2021 15:25:43"
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%m/%d/%Y %H:%M:%S")
+
+    def _coinledger_code(self, currency):
+        return currency
+
+    def export_cryptocom_csv(self, csvpath):
+        """ Write CSV, suitable for import into tax.crypto.com """
+        tags = {
+            et.TX_TYPE_AIRDROP: "airdrop",
+            et.TX_TYPE_STAKING: "reward",
+            et.TX_TYPE_TRADE: "swap",
+            et.TX_TYPE_TRANSFER: "transfer",
+            et.TX_TYPE_INCOME: "payment",
+            et.TX_TYPE_SPEND: "payment",
+            et.TX_TYPE_BORROW: "transfer",
+            et.TX_TYPE_REPAY: "transfer",
+        }
+        rows = self._rows_export(et.FORMAT_CRYPTOCOM)
+
+        with open(csvpath, 'w', newline='', encoding='utf-8') as f:
+            mywriter = csv.writer(f)
+
+            # header row
+            mywriter.writerow(et.CRCOM_FIELDS)
+
+            # data rows
+            for row in rows:
+                # determine Type field
+                row_type = tags[row.tx_type]
+
+                # determine Received Currency, Received Amount, Sent Currency, Sent Amount
+                if row_type == "transfer":
+                    # cryptocom has strange spec where receive/sent should be same on transfers between users' wallets
+                    if row.received_amount:
+                        amt, cur = row.received_amount, row.received_currency
+                    elif row.sent_amount:
+                        amt, cur = row.sent_amount, row.sent_currency
+                    else:
+                        logging.error("export_crytocom_csv(): bad condition row=%s", row.as_array())
+                    received_amount, received_currency = amt, cur
+                    sent_amount, sent_currency = amt, cur
+                else:
+                    received_amount = row.received_amount
+                    received_currency = row.received_currency
+                    sent_currency = row.sent_currency
+                    sent_amount = row.sent_amount
+
+                # Determine fee and fee currency
+                if row.tx_type in [et.TX_TYPE_AIRDROP, et.TX_TYPE_STAKING]:
+                    # To workaround "Fee is not allowed for received types" error.
+                    # This is probably incorrect implementation by tax.crypto.com, but
+                    # failed import is worse result for user.
+                    fee = ""
+                    fee_currency = ""
+                else:
+                    fee = row.fee
+                    fee_currency = row.fee_currency
+
+                line = [
+                    self._cryptocom_timestamp(row.timestamp),  # Date
+                    row_type,                                  # Type
+                    received_currency,                         # Received Currency
+                    received_amount,                           # Received Amount
+                    "",                                        # Received Net Worth
+                    sent_currency,                             # Sent Currency
+                    sent_amount,                               # Sent Amount
+                    "",                                        # Sent Net Worth
+                    fee_currency,                              # Fee Currency
+                    fee,                                       # Fee Amount
+                    ""                                         # Fee Net Worth
+                ]
+                mywriter.writerow(line)
+
+        logging.info("Wrote to %s", csvpath)
+
+    def _cryptocom_timestamp(self, ts):
+        # Convert "2021-08-04 15:25:43" to "08/14/2021 15:25:43"
+        dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        return dt.strftime("%m/%d/%Y %H:%M:%S")
 
     def export_koinly_csv(self, csvpath):
         """ Write CSV, suitable for import into Koinly """
@@ -761,6 +895,9 @@ class Exporter:
             et.TX_TYPE_REPAY: "Transfer Unknown"
         }
         rows = self._rows_export(et.FORMAT_TAXBIT)
+        if not self.ticker:
+            logging.error("Unable to identify tx_source.  Missing ticker")
+        tx_source = "{} WALLET".format(self.ticker.upper())
 
         with open(csvpath, 'w', newline='', encoding='utf-8') as f:
             mywriter = csv.writer(f)
@@ -769,25 +906,6 @@ class Exporter:
             mywriter.writerow(et.TAXBIT_FIELDS)
 
             # data rows
-
-            if self.wallet_address.startswith("cosmo"):
-                tx_source = "ATOM WALLET"
-            elif self.wallet_address.startswith("terra"):
-                tx_source = "LUNA WALLET"
-            elif self.wallet_address.startswith("osmo"):
-                tx_source = "OSMO WALLET"
-            elif self.wallet_address.startswith("chihuahua"):
-                tx_source = "HUAHUA WALLET"
-            else:
-                exchange = self.rows[0].exchange if len(self.rows) else ""
-                if exchange == EXCHANGE_SOLANA_BLOCKCHAIN:
-                    tx_source = "SOL WALLET"
-                elif exchange == EXCHANGE_ALGORAND_BLOCKCHAIN:
-                    tx_source = "ALGO WALLET"
-                else:
-                    tx_source = ""
-                    logging.critical("Bad condition: unable to identify tx_source in export_taxbit_csv()")
-
             for row in rows:
                 # Determine Transaction Type
                 tb_type = TAXBIT_TYPES[row.tx_type]
